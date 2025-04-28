@@ -16,7 +16,6 @@
 #include <MassEntityTemplateRegistry.h>
 
 //Subsystem
-#include "MassSignalSubsystem.h"
 #include <Mass/Collision/SpatialHashGrid.h>
 
 #include "Components/SplineComponent.h"
@@ -24,6 +23,7 @@
 
 // Misc
 #include "Kismet/GameplayStatics.h"
+#include "Structs/ReplicationStructs.h"
 
 UAmalgamMoveProcessor::UAmalgamMoveProcessor() : EntityQuery(*this)
 {
@@ -69,6 +69,16 @@ void UAmalgamMoveProcessor::Execute(FMassEntityManager& EntityManager, FMassExec
 
 		check(VisualisationManager);
 	}
+	if (!GameModeInfernale)
+	{
+		const auto GameMode = Cast<AGameModeInfernale>(UGameplayStatics::GetGameMode(GetWorld()));
+		if (GameMode)
+			GameModeInfernale = GameMode;
+		else
+			GameModeInfernale = nullptr;
+
+		check(GameModeInfernale);
+	}
 	EntityQuery.ForEachEntityChunk(EntityManager, Context, ([this](FMassExecutionContext& Context)
 	{
 		TArrayView<FTransformFragment> TransformView = Context.GetMutableFragmentView<FTransformFragment>();
@@ -83,6 +93,9 @@ void UAmalgamMoveProcessor::Execute(FMassEntityManager& EntityManager, FMassExec
 		TArrayView<FAmalgamTransmutationFragment> TransFragView = Context.GetMutableFragmentView<FAmalgamTransmutationFragment>();
 		
 		const float WorldDeltaTime = Context.GetDeltaTimeSeconds();
+
+		TArray<FVector> UpdatedLocations;
+		TArray<FVector> UpdatedRotations;
 
 		for (int32 Index = 0; Index < Context.GetNumEntities(); ++Index)
 		{
@@ -100,17 +113,35 @@ void UAmalgamMoveProcessor::Execute(FMassEntityManager& EntityManager, FMassExec
 			FTransform& Transform = TransformFragment.GetMutableTransform();
 			FVector Location = Transform.GetLocation();
 
-			FVector Destination;
-			FVector Direction;
-
 			const auto State = StateFragView[Index].GetState();
 			bool bSucceeded = true;
+			const auto Flux = FluxFragment.GetFlux();
 
-			if (PathFragment.FluxUpdateID != FluxFragment.GetFlux()->GetUpdateID())
-				PathFragment.CopyPathFromFlux(FluxFragment.GetFlux(), Location, false);
+			if (!Flux.IsValid() && !PathFragment.IsPathFinal())
+			{
+				PathFragment.MakePathFinal();
+				/*StateFragment.SetStateAndNotify(EAmalgamState::Killed, Context, Index);
+				continue;*/
+			}
 
-			if (PathFragment.bRecoverPath)
-				PathFragment.RecoverPath(Location);
+			const auto Version = PathFragment.GetUpdateVersion();
+			const bool FluxVersionIsOk = Version == Flux->GetUpdateVersion();
+			if (Version != -1 && !FluxVersionIsOk)
+            {
+				PathFragment.MakePathFinal();
+            }
+
+			if (!PathFragment.IsPathFinal())
+			{
+				if (PathFragment.GetUpdateID() != Flux->GetUpdateID())
+				{
+					PathFragment.CopyPathFromFlux(Flux, Location, false);
+					MovementFragment->SetSpeedMult(Flux->GetAmalgamsSpeedMult());
+				}
+
+				if (PathFragment.ShouldRecover())
+					PathFragment.RecoverPath(Location);
+			}
 
 			FVector TargetLocation;
 
@@ -121,7 +152,13 @@ void UAmalgamMoveProcessor::Execute(FMassEntityManager& EntityManager, FMassExec
 				break;
 
 			case EAmalgamState::Aggroed:
+			{
 				TargetLocation = GetTargetLocation(TargetFragment);
+
+				float TargetRangeOffset = TargetFragment.GetTargetRangeOffset(StateFragment.GetAggro());
+				float EntityRangeOffset = AggroFragment.GetFightRange();
+				float TotalRangeOffset = TargetRangeOffset + EntityRangeOffset;
+				TargetFragment.SetTotalRangeOffset(TotalRangeOffset);
 
 				if (TargetLocation == FVector::ZeroVector)
 				{
@@ -129,13 +166,13 @@ void UAmalgamMoveProcessor::Execute(FMassEntityManager& EntityManager, FMassExec
 					StateFragment.SetStateAndNotify(EAmalgamState::FollowPath, Context, Index);
 					continue;
 				}
-				else if ((Location - TargetLocation).Length() < AggroFragment.GetFightRange())
+				else if ((Location - TargetLocation).Length() - TotalRangeOffset < AggroFragment.GetFightRange())
 				{
 					StateFragment.SetStateAndNotify(EAmalgamState::Fighting, Context, Index);
 					continue;
 				}
-				
-				bSucceeded = FollowTarget(TransformFragment, TargetLocation, DirectionFragment, TransFrag.GetSpeedModifier(MovementFragment->GetSpeed()), PathFragment.AcceptanceRadiusAttack, WorldDeltaTime);
+				bSucceeded = FollowTarget(TransformFragment, TargetLocation, DirectionFragment, TransFrag.GetSpeedModifier(MovementFragment->GetRushSpeed()), PathFragment.GetAcceptanceAttackRadius(), WorldDeltaTime);
+			}
 				break;
 
 			case EAmalgamState::Fighting:
@@ -149,13 +186,87 @@ void UAmalgamMoveProcessor::Execute(FMassEntityManager& EntityManager, FMassExec
 
 			if(!bSucceeded)
 			{
+				StateFragment.SetDeathReason(EAmalgamDeathReason::EndOfPath);
 				StateFragment.SetStateAndNotify(EAmalgamState::Killed, Context, Index);
+				//StateFragment.Kill(EAmalgamDeathReason::EndOfPath, Context, Index);
 				continue;
 			}
 			
-			VisualisationManager->UpdatePositionP(Context.GetEntity(Index), TransformFragment.GetTransform().GetLocation(), DirectionFragment.Direction);
+			UpdatedLocations.Add(TransformFragment.GetTransform().GetLocation());
+			UpdatedRotations.Add(DirectionFragment.Direction);
+
+			//VisualisationManager->UpdatePositionP(Context.GetEntity(Index), TransformFragment.GetTransform().GetLocation(), DirectionFragment.Direction);
+		}
+		
+		TArray<FMassEntityHandle> Entities(Context.GetEntities());
+		if (Entities.Num() != UpdatedLocations.Num() || Entities.Num() != UpdatedRotations.Num())
+		{
+			if (bDebugMove) GEngine->AddOnScreenDebugMessage(-1, 2.5f, FColor::Red, FString::Printf(TEXT("AmalgamMoveProcessor : \n\t Entities and UpdatedLocations size mismatch.")));
+			return;
+		}
+		
+		const auto PCs = GameModeInfernale->GetPlayerControllers();
+		auto FPlayerControllerInfos = TArray<FPlayerControllerInfo>();
+		for (const auto PC : PCs)
+		{
+			FPlayerControllerInfo Info;
+			Info.PlayerController = PC;
+			Info.PlayerLocation = PC->GetCameraCenterPoint();
+			Info.DataForVisualisations = TArray<FDataForVisualisation>();
+			Info.EntityHandlesToHide = TArray<FMassEntityHandle>();
+			FPlayerControllerInfos.Add(Info);
+		}
+		const auto Radius = VisualisationManager->GetRadius();
+
+
+		TArray<FMassEntityHandle> Handles = TArray<FMassEntityHandle>();
+		for (int32 i = 0; i < Entities.Num(); ++i)
+		{
+			const auto UpdatedLocation = UpdatedLocations[i];
+			const auto UpdatedRotation = UpdatedRotations[i];
+			FAmalgamMovementFragment* MovementFragment = &MovementFragView[i];
+			
+			FDataForVisualisation Data = FDataForVisualisation();
+			Data.EntityHandle = Entities[i];
+			Data.LocationX = UpdatedLocation.X;
+			Data.LocationY = UpdatedLocation.Y;
+			Data.RotationX = UpdatedRotation.X;
+			Data.RotationY = UpdatedRotation.Y;
+			
+
+			for (FPlayerControllerInfo& FPlayerControllerInfo : FPlayerControllerInfos)
+			{
+				const auto PCTeam = FPlayerControllerInfo.PlayerController->GetTeam();
+				const auto Distance = FVector::DistSquared(FPlayerControllerInfo.PlayerLocation, UpdatedLocation);
+				if (Distance > FMath::Square(Radius))
+				{
+					if (!MovementFragment->IsVisibleBy(PCTeam)) continue;
+					MovementFragment->SetVisibleBy(PCTeam, false);
+					FPlayerControllerInfo.EntityHandlesToHide.Add(Entities[i]);
+					continue;
+				}
+				FPlayerControllerInfo.DataForVisualisations.Add(Data);
+				MovementFragment->SetVisibleBy(PCTeam, true);
+			}
+			
+			//DataForVisualisation.Add(Data);
+		}
+
+		if (Entities.Num() != UpdatedLocations.Num())
+		{
+			GEngine->AddOnScreenDebugMessage(-1, 2.5f, FColor::Red, FString::Printf(TEXT("AmalgamMoveProcessor : \n\t Handles and UpdatedLocations size mismatch.")));
+			return;
+		}
+		
+		//VisualisationManager->BatchUpdatePosition(Handles, DataForVisualisation);
+
+		for (FPlayerControllerInfo& FPlayerControllerInfo : FPlayerControllerInfos)
+		{
+			FPlayerControllerInfo.PlayerController->UpdateUnits(FPlayerControllerInfo.DataForVisualisations, FPlayerControllerInfo.EntityHandlesToHide);
 		}
 	}));
+	
+
 }
 
 FVector UAmalgamMoveProcessor::GetDirectionFollow(const FVector Location, FVector& Destination, FAmalgamFluxFragment& FluxFragment)
@@ -179,7 +290,7 @@ FVector UAmalgamMoveProcessor::GetDirectionAggroed(const FVector Location, FVect
 		break;
 
 	case EAmalgamAggro::Building:
-		if (!TargetFragment.GetTargetBuilding())
+		if (!TargetFragment.GetTargetBuilding().IsValid())
 		{
 			if(bDebugMove) GEngine->AddOnScreenDebugMessage(-1, 2.5f, FColor::Red, FString::Printf(TEXT("MoveProcessor : \n\t Target building is null.")));
 			return FVector::ZeroVector;
@@ -197,11 +308,11 @@ FVector UAmalgamMoveProcessor::GetDirectionAggroed(const FVector Location, FVect
 FVector UAmalgamMoveProcessor::GetTargetLocation(const FAmalgamTargetFragment TargetFrag)
 {
 	FVector Location = FVector::ZeroVector;
-	if (TargetFrag.GetTargetBuilding()) 
+	if (TargetFrag.GetTargetBuilding().IsValid()) 
 	{
 		Location = TargetFrag.GetTargetBuilding()->GetActorLocation();
 	}
-	else if (TargetFrag.GetTargetLDElem())
+	else if (TargetFrag.GetTargetLDElem().IsValid())
 	{
 		Location = TargetFrag.GetTargetLDElem()->GetActorLocation();
 	}
@@ -252,7 +363,7 @@ bool UAmalgamMoveProcessor::FollowPath(FTransformFragment& TrsfFrag, FAmalgamFlu
 	const auto Direction = TargetLocation - CurrentLocation;
 	const auto Distance = Direction.Length();
 
-	if (Distance < PathFragment.AcceptancePathfindingRadius)
+	if (Distance < PathFragment.GetAcceptancePathfindingRadius())
 	{
 		FlxFrag.NextSplinePoint();
 		PathFragment.NextPoint();

@@ -58,6 +58,7 @@ void UAmalgamStateHandlerObserver::Execute(FMassEntityManager& EntityManager, FM
 
 				case EAmalgamState::FollowPath:
 					Context.Defer().AddTag<FAmalgamMoveTag>(Context.GetEntity(Index));
+					Context.Defer().RemoveTag<FAmalgamAggroTag>(Context.GetEntity(Index));
 					Context.Defer().RemoveTag<FAmalgamFightTag>(Context.GetEntity(Index));
 					break;
 

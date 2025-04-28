@@ -9,6 +9,13 @@
 /**
  * 
  */
+
+enum EAmalgamAggro : uint8;
+struct FAmalgamStateFragment;
+struct FAmalgamTargetFragment;
+
+class IUnitTargetable;
+
 UCLASS()
 class INFERNALETESTING_API UAmalgamAggroProcessor : public UMassProcessor
 {
@@ -19,8 +26,14 @@ class INFERNALETESTING_API UAmalgamAggroProcessor : public UMassProcessor
 	virtual void Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context) override;
 
 private:
+
+	EAmalgamAggro ClosestDetected(float AmalgamDist, float BuildingDist, float LDDist);
+	void AggroDetected(EAmalgamAggro Detected, FAmalgamStateFragment& StateFragment, FAmalgamTargetFragment& TargetFragment, FMassEntityHandle Handle, IUnitTargetable* Target, FMassExecutionContext& Context, int32 EntityIndex);
+
+private:
 	FMassEntityQuery EntityQuery;
 
-	float CheckDelay = 2.5f;
+	float CheckDelay = 1.0f;
 	float CheckTimer = 0.f;
+	bool bDebug = false;
 };

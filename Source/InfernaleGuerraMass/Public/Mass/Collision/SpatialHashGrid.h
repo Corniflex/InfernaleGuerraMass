@@ -8,20 +8,27 @@
 #include "Mass/Army/AmalgamFragments.h"
 #include "LD/Buildings/BuildingParent.h"
 #include <LD/LDElement/LDElement.h>
+#include <LD/LDElement/SoulBeacon.h>
 
 #include "SpatialHashGrid.generated.h"
+
+
+class ADataGathererActor;
 
 struct GridCellEntityData
 {
 	FOwner Owner;
 	FVector Location;
 	
+	EEntityType EntityType;
+
 	float MaxEntityHealth;
 	float EntityHealth;
+	float TargetableRadius;
 
 	int AggroCount = 0;
 
-	GridCellEntityData(FOwner EntityOwner, FVector EntityLocation, float Health) : Owner(EntityOwner), Location(EntityLocation), MaxEntityHealth(Health), EntityHealth(Health)
+	GridCellEntityData(FOwner EntityOwner, FVector EntityLocation, float Health, float Radius, EEntityType Type) : Owner(EntityOwner), Location(EntityLocation), EntityType(Type), MaxEntityHealth(Health), EntityHealth(Health), TargetableRadius(Radius)
 	{}
 
 	bool operator== (const GridCellEntityData& Other)
@@ -49,15 +56,19 @@ struct GridCellEntityData
 
 	static GridCellEntityData None()
 	{
-		return GridCellEntityData(FOwner(), FVector::ZeroVector, 0.f);
+		return GridCellEntityData(FOwner(), FVector::ZeroVector, 0.f, 0.f, EEntityType::EntityTypeNone);
 	}
 };
 
 struct HashGridCell
 {
 	TMap<FMassEntityHandle, GridCellEntityData> Entities = TMap <FMassEntityHandle, GridCellEntityData>();
-	TArray<ABuildingParent*> Buildings = TArray<ABuildingParent*>();
-	TArray<ALDElement*> LDElements = TArray<ALDElement*>();
+	TArray<TWeakObjectPtr<ABuildingParent>> Buildings = TArray<TWeakObjectPtr<ABuildingParent>>();
+	TArray<TWeakObjectPtr<ALDElement>> LDElements = TArray<TWeakObjectPtr<ALDElement>>();
+	
+	TArray<FOwner> PresentOwners;
+
+	TWeakObjectPtr<ASoulBeacon> LinkedBeacon;
 
 	/* Getters */
 
@@ -67,15 +78,20 @@ struct HashGridCell
 	TArray<GridCellEntityData> GetMutableEntities();
 	TArray<GridCellEntityData> GetEntitiesByTeamDifference(FOwner Owner);
 
-	TArray<ABuildingParent*> GetBuildings();
+	TArray<TWeakObjectPtr<ABuildingParent>> GetBuildings();
 
-	TArray<ALDElement*> GetLDElements();
+	TArray<TWeakObjectPtr<ALDElement>> GetLDElements();
+	
+	TArray<FOwner> GetPresentOwners();
+
+	void UpdatePresentOwners();
 
 	/* Contains methods */
 
 	bool Contains(FMassEntityHandle Entity);
-	bool Contains(ABuildingParent* Building);
-	bool Contains(ALDElement* LDElement);
+	bool Contains(TWeakObjectPtr<ABuildingParent> Building);
+	bool Contains(TWeakObjectPtr<ALDElement> LDElement);
+
 
 	/* Num methods */
 	int GetTotalNum() { return Entities.Num() + Buildings.Num() + LDElements.Num(); }
@@ -85,6 +101,17 @@ struct HashGridCell
 
 	int GetTotalNumByTeam(FOwner Owner);
 	int GetTotalNumByTeamDifference(FOwner Owner);
+};
+
+struct FDetectionResult
+{
+	FMassEntityHandle Entity = FMassEntityHandle(0,0);
+	TWeakObjectPtr<ABuildingParent> Building = nullptr;
+	TWeakObjectPtr<ALDElement> LD = nullptr;
+
+	float EntityDistance = TNumericLimits<float>::Max();
+	float BuildingDistance = TNumericLimits<float>::Max();
+	float LDDistance = TNumericLimits<float>::Max();
 };
 
 UCLASS()
@@ -111,7 +138,7 @@ public:
 	/* ----- Entities */
 
 	// Adds Entity to grid and references data properly for quick access
-	static bool AddEntityToGrid(FVector WorldCoordinates, FMassEntityHandle Entity, FOwner Owner, FTransformFragment* Transform, float Health);
+	static bool AddEntityToGrid(FVector WorldCoordinates, FMassEntityHandle Entity, FOwner Owner, FTransformFragment* Transform, float Health, float TargetableRadius, EEntityType Type);
 
 	// Removes Entity from grid and ensures all references are cleaned up
 	static bool RemoveEntityFromGrid(FMassEntityHandle Entity);
@@ -139,15 +166,17 @@ public:
 
 	// Removes LDElement from grid
 	static bool RemoveLDElementFromGrid(FVector WorldCoordinates, ALDElement* LDElement);
+	
+	static bool AddSoulBeaconToGrid(ASoulBeacon* SoulBeacon);
 
 	/* ----- Utility Methods */
 
 	// Checks the presence array to see if Entity is already known
 	static bool Contains(FMassEntityHandle Entity);
 	
-	static bool Contains(FVector Location, ABuildingParent* Building);
+	static bool Contains(FVector Location, TWeakObjectPtr<ABuildingParent> Building);
 	
-	static bool Contains(FVector Location, ALDElement* LDElem);
+	static bool Contains(FVector Location, TWeakObjectPtr<ALDElement> LDElem);
 
 	// Returns the Entity's cell coordinates from its Handle
 	static FIntVector2 CoordsFromHandle(FMassEntityHandle Entity);
@@ -173,6 +202,11 @@ public:
 	// Returns all entities in a given cell
 	static TArray<GridCellEntityData> GetEntitiesInCell(FIntVector2 Coordinates);
 
+	// Returns a ref to a cell
+	static HashGridCell* GetCellRef(FMassEntityHandle Handle);
+	static HashGridCell* GetCellRef(FIntVector2 GridCoords);
+	static HashGridCell* GetCellRef(FVector WorldCoords);
+
 	// Converts passed coordinates as in-grid coordinates
 	static FIntVector2 WorldToGridCoords(FVector WorldCoordinates);
 
@@ -183,22 +217,45 @@ public:
 	static int32 GetEntitiesCount();
 
 	static int32 GetMaxEntityAggroCount() { return Instance->MaxEntityAggroCount; }
+
+	static TArray<FVector2D> GetAllEntityOfTypeOfTeam(EEntityType Type, ETeam Team);
 	
 	/* ----- Detection Methods ------ */
 
-	static TMap<FMassEntityHandle, GridCellEntityData> FindEntitiesInRange(FVector WorldCoordinates, float Range, float Angle, FVector EntityForwardVector, FMassEntityHandle Entity);
-	static TArray<ABuildingParent*> FindBuildingsInRange(FVector WorldCoordinates, float Range, float Angle, FVector EntityForwardVector, FMassEntityHandle Entity);
-	static TArray<ALDElement*> FindLDElementsInRange(FVector WorldCoordinates, float Range, float Angle, FVector EntityForwardVector, FMassEntityHandle Entity);
+	static FDetectionResult FindClosestElementsInRange(FVector WorldCoordinates, float Range, float Angle = 360.f, FVector EntityForwardVector = FVector::ZeroVector, FMassEntityHandle Entity = FMassEntityHandle(0, 0));
+
+	static TMap<FMassEntityHandle, GridCellEntityData> FindEntitiesInRange(FVector WorldCoordinates, float Range, float Angle, FVector EntityForwardVector, FMassEntityHandle Entity, ETeam Team = ETeam::NatureTeam);
+	static TArray<TWeakObjectPtr<ABuildingParent>> FindBuildingsInRange(FVector WorldCoordinates, float Range, float Angle, FVector EntityForwardVector, FMassEntityHandle Entity);
+	static TArray<TWeakObjectPtr<ALDElement>> FindLDElementsInRange(FVector WorldCoordinates, float Range, float Angle, FVector EntityForwardVector, FMassEntityHandle Entity);
+	static TArray<HashGridCell*> FindCellsInRange(FVector WorldCoordinates, float Range, float Angle, FVector EntityForwardVector, FMassEntityHandle Entity);
 	
 	static TMap<FMassEntityHandle, GridCellEntityData> FindEntitiesAroundCell(FVector WorldCoordinates, int32 Range);
 
 	static FMassEntityHandle FindClosestEntity(FVector WorldCoordinates, float Range, float Angle, FVector EntityForwardVector, FMassEntityHandle Entity, ETeam Team);
-	static ABuildingParent* FindClosestBuilding(FVector WorldCoordinates, float Range, float Angle, FVector EntityForwardVector, FMassEntityHandle Entity, ETeam Team);
-	static ALDElement* FindClosestLDElement(FVector WorldCoordinates, float Range, float Angle, FVector EntityForwardVector, FMassEntityHandle Entity, ETeam Team);
+	static TWeakObjectPtr<ABuildingParent> FindClosestBuilding(FVector WorldCoordinates, float Range, float Angle, FVector EntityForwardVector, FMassEntityHandle Entity, ETeam Team);
+	static TWeakObjectPtr<ALDElement> FindClosestLDElement(FVector WorldCoordinates, float Range, float Angle, FVector EntityForwardVector, FMassEntityHandle Entity, ETeam Team);
+
+	static TWeakObjectPtr<ASoulBeacon> IsInSoulBeaconRange(FMassEntityHandle Entity);
+	static TWeakObjectPtr<ASoulBeacon> IsInSoulBeaconRangeByCell(HashGridCell* Cell);
+	static TWeakObjectPtr<ASoulBeacon> IsInSoulBeaconRange(FVector WorldCoordinates);
 
 	/* ----- Debug Methods ----- */
+	static void DebugAmalgamDetection(FVector WorldCoordinates, float Range, float Angle, FVector ForwardVector, bool Detected, FVector TargetLocation);
+
 	static void DebugDetectionRange(FVector WorldCoordinates, float Range);
 	static void DebugDetectionCheck(FVector WorldCoordinates, FVector TargetPosition, float Range, float Angle, FVector ForwardVector, bool DetectionCheckValue);
+	static void DebugDetectionCone(FVector WorldCoordinates, float Range, float Angle, FVector Forward, bool Detected);
+	static void DebugDetectionCell(FVector WorldCoordinates, float Range);
+	static void DebugSingleDetectionCell(FVector WorldCoordinates, int XOffset, int YOffset, FColor CellColor);
+
+	static bool DebugCheckExpr(bool Expr, const char* Msg, bool bUseAsserts);
+
+	UFUNCTION(CallInEditor)
+	void DebugAllBuildingRanges();
+	UFUNCTION(CallInEditor)
+	void DebugAllLDRanges();
+	UFUNCTION(CallInEditor)
+	void DebugGridContent();
 
 protected:
 	// Called when the game starts or when spawned
@@ -235,6 +292,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	int32 MaxEntityAggroCount = 2;
 
+	UPROPERTY(EditAnywhere, BlueprintReadOnly)
+	int32 MaxDetectableEntities = 10; // Max number of entities detectable per cell
+
+
 protected:
 	// Single cell width & height in unreal units
 	FIntVector2 CellSize;
@@ -250,8 +311,20 @@ private:
 
 	TMap<FMassEntityHandle, FIntVector2> HandleToCoordsMap;
 	TArray<HashGridCell> GridCells;
+	TArray<TWeakObjectPtr<ASoulBeacon>> AllSoulBeacons;
 	FVector GridLocation;
 
-	/*Old*/
 	TArray<FMassEntityHandle> PresentEntities;
+
+	UPROPERTY(EditAnywhere, Category="Grid Debug")
+	bool bDebugAmalgamDetectionCone = false;
+
+	UPROPERTY(EditAnywhere, Category="Grid Debug")
+	bool bDebugAmalgamDetectionCheck = false;
+
+	UPROPERTY(EditAnywhere, Category="Grid Debug")
+	bool bDebugDetectionRange = false;
+
+	UPROPERTY(EditAnywhere, Category="Grid Debug")
+	bool bUseAsserts = false;
 };

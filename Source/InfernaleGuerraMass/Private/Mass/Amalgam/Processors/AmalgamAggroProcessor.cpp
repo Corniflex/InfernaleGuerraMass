@@ -57,10 +57,10 @@ void UAmalgamAggroProcessor::Execute(FMassEntityManager& EntityManager, FMassExe
 {
 	EntityQuery.ForEachEntityChunk(EntityManager, Context, [this](FMassExecutionContext& Context)
 		{
-			CheckTimer += Context.GetDeltaTimeSeconds();
+			/*CheckTimer += Context.GetDeltaTimeSeconds();
 			if (!(CheckTimer > CheckDelay)) return;
 
-			CheckTimer = 0.f;
+			CheckTimer = 0.f;*/
 
 			TArrayView<FTransformFragment> TransformView = Context.GetMutableFragmentView<FTransformFragment>();
 			TArrayView<FAmalgamTargetFragment> TargetFragView = Context.GetMutableFragmentView<FAmalgamTargetFragment>();
@@ -71,8 +71,9 @@ void UAmalgamAggroProcessor::Execute(FMassEntityManager& EntityManager, FMassExe
 
 			for (int32 Index = 0; Index < Context.GetNumEntities(); ++Index)
 			{
-				if (StateFragView[Index].GetState() == EAmalgamState::Fighting) continue;
-
+				if (StateFragView[Index].GetState() == EAmalgamState::Fighting)
+					continue;
+				
 				FTransformFragment& TransformFragment = TransformView[Index];
 				FAmalgamTargetFragment& TargetFragment = TargetFragView[Index];
 				FAmalgamAggroFragment& AggroFragment = AggroFragView[Index];
@@ -82,52 +83,98 @@ void UAmalgamAggroProcessor::Execute(FMassEntityManager& EntityManager, FMassExe
 				FVector Location = TransformFragment.GetTransform().GetLocation();
 
 				FAmalgamStateFragment& StateFragment = StateFragView[Index];
-				
+			
+
 				// check for entities in fight range before anything else
 
-				FMassEntityHandle PrioritizedEntity = ASpatialHashGrid::FindClosestEntity(Location, AggroFragment.GetFightRange(), 360.f, DirectionFragment.Direction, Context.GetEntity(Index), OwnerFragment.GetOwner().Team);
-				
+				//float DetectionRange = 2800.f;
+				float DetectionRange = AggroFragment.GetAggroRange() + AggroFragment.GetTargetableRange();
+
+
+				/*FMassEntityHandle PrioritizedEntity = ASpatialHashGrid::FindClosestEntity(Location, AggroFragment.GetFightRange(), 360.f, DirectionFragment.Direction, Context.GetEntity(Index), OwnerFragment.GetOwner().Team);
+
 				if (PrioritizedEntity.IsValid())
 				{
-					DrawDebugLine(Context.GetWorld(), Location, ASpatialHashGrid::GetEntityData(PrioritizedEntity).Location, FColor::Orange, false, 1.5f);
+					if(bDebug) DrawDebugLine(Context.GetWorld(), Location, ASpatialHashGrid::GetEntityData(PrioritizedEntity).Location, FColor::Orange, false, 1.5f);
 					StateFragment.SetAggro(EAmalgamAggro::Amalgam);
 					TargetFragment.SetTargetBuilding(nullptr);
+					TargetFragment.SetTargetLDElem(nullptr);
 					TargetFragment.SetTargetEntityHandle(PrioritizedEntity);
-					GEngine->AddOnScreenDebugMessage(-1, 2.5f, FColor::Orange, FString::Printf(TEXT("AggroProcessor : \n\t Entity prioritized in fight range")));
-				}
+					if (bDebug) GEngine->AddOnScreenDebugMessage(-1, 2.5f, FColor::Orange, FString::Printf(TEXT("AggroProcessor : \n\t Entity prioritized in fight range")));
+					StateFragment.SetStateAndNotify(EAmalgamState::Aggroed, Context, Index);
+					continue;
+				}*/
 
-				FMassEntityHandle FoundEntity = ASpatialHashGrid::FindClosestEntity(Location, AggroFragment.GetAggroRange(), AggroFragment.GetAggroAngle(), DirectionFragment.Direction, Context.GetEntity(Index), OwnerFragment.GetOwner().Team);
+				/*FMassEntityHandle FoundEntity = ASpatialHashGrid::FindClosestEntity(Location, DetectionRange, AggroFragment.GetAggroAngle(), DirectionFragment.Direction, Context.GetEntity(Index), OwnerFragment.GetOwner().Team);
+				TWeakObjectPtr<ABuildingParent> FoundBuilding = ASpatialHashGrid::FindClosestBuilding(Location, DetectionRange, AggroFragment.GetAggroAngle(), DirectionFragment.Direction, Context.GetEntity(Index), OwnerFragment.GetOwner().Team);
+				TWeakObjectPtr<ALDElement> FoundLDElem = ASpatialHashGrid::FindClosestLDElement(Location, DetectionRange, AggroFragment.GetAggroAngle(), DirectionFragment.Direction, Context.GetEntity(Index), OwnerFragment.GetOwner().Team);*/
 
-				ABuildingParent* FoundBuilding = ASpatialHashGrid::FindClosestBuilding(Location, AggroFragment.GetAggroRange(), AggroFragment.GetAggroAngle(), DirectionFragment.Direction, Context.GetEntity(Index), OwnerFragment.GetOwner().Team);
+				FDetectionResult Detected = ASpatialHashGrid::FindClosestElementsInRange(Location, DetectionRange, AggroFragment.GetAggroAngle(), DirectionFragment.Direction, Context.GetEntity(Index));
 
-				ALDElement* FoundLDElem = ASpatialHashGrid::FindClosestLDElement(Location, AggroFragment.GetAggroRange(), AggroFragment.GetAggroAngle(), DirectionFragment.Direction, Context.GetEntity(Index), OwnerFragment.GetOwner().Team);
+				float AmalgamDist = TNumericLimits<float>::Max();
+				if (Detected.Entity.IsSet())
+					AmalgamDist = Detected.EntityDistance - AggroFragment.GetTargetableRange();
 
-				if (!FoundEntity.IsValid() && FoundBuilding == nullptr && FoundLDElem == nullptr) continue;
+				float BuildingDist = TNumericLimits<float>::Max();
+				if (Detected.Building.IsValid())
+					BuildingDist = Detected.BuildingDistance - AggroFragment.GetTargetableRange();
 
-				if (FoundEntity.IsValid())
-				{
-					DrawDebugLine(Context.GetWorld(), Location, ASpatialHashGrid::GetEntityData(FoundEntity).Location, FColor::Orange, false, 1.5f);
-					StateFragment.SetAggro(EAmalgamAggro::Amalgam);
-					TargetFragment.SetTargetBuilding(nullptr);
-					TargetFragment.SetTargetEntityHandle(FoundEntity);
-					GEngine->AddOnScreenDebugMessage(-1, 2.5f, FColor::Orange, FString::Printf(TEXT("AggroProcessor : \n\t Amalgam closest")));
-				}
-				else if(FoundBuilding != nullptr)
-				{
-					DrawDebugLine(Context.GetWorld(), Location, FoundBuilding->GetActorLocation(), FColor::Orange, false, 1.5f);
-					StateFragment.SetAggro(EAmalgamAggro::Building);
-					TargetFragment.SetTargetBuilding(FoundBuilding);
-					GEngine->AddOnScreenDebugMessage(-1, 2.5f, FColor::Orange, FString::Printf(TEXT("AggroProcessor : \n\t Building closest @ distance %f"), (Location - FoundBuilding->GetActorLocation()).Length()));
-				}
-				else
-				{
-					DrawDebugLine(Context.GetWorld(), Location, FoundLDElem->GetActorLocation(), FColor::Orange, false, 1.5f);
-					StateFragment.SetAggro(EAmalgamAggro::LDElement);
-					TargetFragment.SetTargetLDElem(FoundLDElem);
-					GEngine->AddOnScreenDebugMessage(-1, 2.5f, FColor::Orange, FString::Printf(TEXT("AggroProcessor : \n\t LDElement closest @ distance %f"), (Location - FoundLDElem->GetActorLocation()).Length()));
-				}
+				float LDDist = TNumericLimits<float>::Max();
+				if (Detected.LD.IsValid())
+					LDDist = Detected.LDDistance - AggroFragment.GetTargetableRange();
 
-				StateFragment.SetStateAndNotify(EAmalgamState::Aggroed, Context, Index);
+				EAmalgamAggro TypeDetected = ClosestDetected(AmalgamDist, BuildingDist, LDDist);
+				
+				//ASpatialHashGrid::DebugDetectionCell(Location, DetectionRange);
+				//if (Index % 2 == 0)
+					//ASpatialHashGrid::DebugDetectionCone(Location, DetectionRange, AggroFragment.GetAggroAngle(), DirectionFragment.Direction, Detected != EAmalgamAggro::NoAggro);
+				
+				IUnitTargetable* TargetActor = TypeDetected == EAmalgamAggro::Building ? Cast<IUnitTargetable>(Detected.Building.Get()) : Cast<IUnitTargetable>(Detected.LD.Get());
+				AggroDetected(TypeDetected, StateFragment, TargetFragment, Detected.Entity, TargetActor, Context, Index);
 			}
 		});
+}
+
+EAmalgamAggro UAmalgamAggroProcessor::ClosestDetected(float AmalgamDist, float BuildingDist, float LDDist)
+{
+	bool BuildingSmaller = BuildingDist < LDDist;
+	float SmallestDist = BuildingSmaller ? BuildingDist : LDDist;
+	if (AmalgamDist < SmallestDist)
+	{
+		return EAmalgamAggro::Amalgam;
+	}
+	
+	if (SmallestDist == TNumericLimits<float>::Max())
+	{
+		return EAmalgamAggro::NoAggro;
+	}
+
+	return BuildingSmaller ? EAmalgamAggro::Building : EAmalgamAggro::LDElement;
+}
+
+void UAmalgamAggroProcessor::AggroDetected(EAmalgamAggro Detected, FAmalgamStateFragment& StateFragment, FAmalgamTargetFragment& TargetFragment, FMassEntityHandle Handle, IUnitTargetable* Target, FMassExecutionContext& Context, int32 EntityIndex)
+{
+	StateFragment.SetAggro(Detected);
+	TargetFragment.ResetTargets();
+
+	switch (Detected)
+	{
+	case EAmalgamAggro::NoAggro:
+		StateFragment.SetStateAndNotify(EAmalgamState::FollowPath, Context, EntityIndex);
+		return;
+	case EAmalgamAggro::Amalgam:
+		TargetFragment.SetTargetEntityHandle(Handle);
+		break;
+	case EAmalgamAggro::Building:
+		TargetFragment.SetTargetBuilding(Cast<ABuildingParent>(Target));
+		break;
+	case EAmalgamAggro::LDElement:
+		TargetFragment.SetTargetLDElem(Cast<ALDElement>(Target));
+		break;
+	default:
+		StateFragment.Kill(EAmalgamDeathReason::Error, Context, EntityIndex);
+		return;
+	}
+
+	StateFragment.SetStateAndNotify(EAmalgamState::Aggroed, Context, EntityIndex);
 }

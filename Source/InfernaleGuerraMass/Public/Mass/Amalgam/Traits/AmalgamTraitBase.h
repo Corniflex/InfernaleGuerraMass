@@ -38,6 +38,13 @@ public:
 	UPROPERTY(EditAnywhere)
 	FAmalgamAcceptanceParams AcceptanceParams;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UnitValue")
+	int PowerAgainstDemons = 0;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UnitValue")
+	int PowerAgainstBuildings = 0;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UnitValue")
+	int PowerAgainstMonsters = 0;
+
 protected:
 	virtual void BuildTemplate(FMassEntityTemplateBuildContext& BuildContext, const UWorld& World) const override;
 };

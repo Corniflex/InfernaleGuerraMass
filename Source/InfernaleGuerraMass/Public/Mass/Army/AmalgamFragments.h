@@ -6,7 +6,6 @@
 #include "MassEntityTypes.h"
 #include "Flux/Flux.h"
 #include "NiagaraComponent.h"
-#include "Interfaces/Ownable.h"
 #include "Components/SplineComponent.h"
 #include "Mass/Army/AmalgamTags.h"
 
@@ -17,29 +16,12 @@
 
 #include <Kismet/GameplayStatics.h>
 #include "Component/PlayerState/TransmutationComponent.h"
+#include "Enums/Enums.h"
 
 #include "LD/LDElement/LDElement.h"
+#include "Structs/SimpleStructs.h"
 
 #include "AmalgamFragments.generated.h"
-
-UENUM()
-enum EAmalgamState : uint8
-{
-	Inactive,
-	FollowPath,
-	Aggroed,
-	Fighting,
-	Killed
-};
-
-UENUM()
-enum EAmalgamAggro : uint8
-{
-	NoAggro,
-	Amalgam,
-	Building,
-	LDElement
-};
 
 /*
 * Stores data regarding entity movement
@@ -56,18 +38,38 @@ private:
 	UPROPERTY(EditAnywhere)
 	float LocalRushSpeed;
 
+	UPROPERTY(EditAnywhere)
+	float LocalSpeedMult = 1;
+
+	UPROPERTY(EditAnywhere)
+	TMap<ETeam, bool> VisibleBy;
+	
 public:
-	void SetParameters(float SpeedParam, float RushSpeedParam)
+	void SetParameters(float SpeedParam, float RushSpeedParam, float SpeedMultParam)
 	{ 
 		LocalSpeed = SpeedParam;
 		LocalRushSpeed = RushSpeedParam;
+		LocalSpeedMult = SpeedMultParam;
+
+		VisibleBy = TMap<ETeam, bool>();
+		VisibleBy.Add(ETeam::Team1, true);
+		VisibleBy.Add(ETeam::Team2, true);
+		VisibleBy.Add(ETeam::Team3, true);
+		VisibleBy.Add(ETeam::Team4, true);
+		VisibleBy.Add(ETeam::NatureTeam, true);
 	}
 
-	float GetSpeed() const { return LocalSpeed; }
+	float GetSpeed() const { return LocalSpeed * LocalSpeedMult; }
 	void SetSpeed(float InSpeed) { LocalSpeed = InSpeed; }
 
-	float GetRushSpeed() const { return LocalRushSpeed; }
+	float GetRushSpeed() const { return LocalRushSpeed * LocalSpeedMult; }
 	void SetRushSpeed(float InRushSpeed) { LocalRushSpeed = InRushSpeed; }
+	
+	void SetSpeedMult(float InSpeedMult) { LocalSpeedMult = InSpeedMult; }
+	float GetSpeedMult() { return LocalSpeedMult; }
+
+	bool IsVisibleBy(const ETeam InTeam) { return VisibleBy[InTeam]; }
+	void SetVisibleBy(const ETeam InTeam, const bool NewVisible) { VisibleBy[InTeam] = NewVisible; }
 };
 
 /*
@@ -79,26 +81,27 @@ struct FAmalgamAggroFragment : public FMassFragment
 	GENERATED_USTRUCT_BODY()
 
 private: 
-	UPROPERTY(EditAnywhere)
 	float LocalAggroRange;
-	UPROPERTY(EditAnywhere)
 	float LocalAggroAngle;
-
-	UPROPERTY(EditAnywhere)
 	float LocalMaxFightRange;
 	float LocalFightRange;
-
-	UPROPERTY(EditAnywhere)
 	float LocalTargetableRange;
 
+	EAmalgamAggroPriority Priority = EAmalgamAggroPriority::Standard;
+
+	int AggroCount = 0;
+	int MaxAggroCount;
+	EEntityType LocalEntityType = EEntityType::EntityTypeNone;
+
 public:
-	void SetParameters(float AggroRangeParam, float MaxFightRangeParam, float AggroAngle, float TargetableRange)
+	void SetParameters(float AggroRangeParam, float MaxFightRangeParam, float AggroAngle, float TargetableRange, EEntityType EntityType/*, float MaxAggro*/)
 	{ 
 		LocalAggroRange = AggroRangeParam;
 		LocalAggroAngle = AggroAngle;
 		LocalMaxFightRange = MaxFightRangeParam;
 		LocalFightRange = MaxFightRangeParam;
 		LocalTargetableRange = TargetableRange;
+		LocalEntityType = EntityType;
 	}
 
 	float GetAggroRange() const { return LocalAggroRange; }
@@ -111,6 +114,11 @@ public:
 
 	float GetFightRange() const { return LocalFightRange; }
 	void SetFightRange(float InFightRange) { LocalFightRange = InFightRange; }
+
+	float GetTargetableRange() const { return LocalTargetableRange; }
+	void SetTargetableRange(float InRange) { LocalTargetableRange = InRange; }
+
+	EEntityType GetEntityType() const { return LocalEntityType; }
 };
 
 /*
@@ -122,31 +130,65 @@ struct FAmalgamFightFragment : public FMassFragment
 	GENERATED_USTRUCT_BODY()
 
 private:
-	UPROPERTY(EditAnywhere)
 	float LocalHealth;
-	UPROPERTY(EditAnywhere)
 	float LocalDamage;
+	float LocalAmalgamDamageMult = 1.0f;
+	float LocalBuildingDamageMult = 1.0f;
+	float LocalLDDamageMult = 1.0f;
+	float LocalBuildingDamage;
 
-	UPROPERTY(EditAnywhere)
+	float LocalStrengthMult = 1.0f;
+	
 	float LocalAttackDelay;
 	float LocalAttackTimer = 0.f;
+	EEntityType LocalEntityType = EEntityType::EntityTypeNone;
 
 public:
-	void SetParameters(float HealthParam, float DamageParam, float DelayParam)
+	void SetParameters(float HealthParam, float DamageParam, float DelayParam, float BuildingDamage, EEntityType EntityType)
 	{
-		LocalHealth = HealthParam;
+		LocalHealth = HealthParam * GetStrengthMult();
 		LocalDamage = DamageParam;
+		LocalBuildingDamage = BuildingDamage;
 		LocalAttackDelay = DelayParam;
+		LocalEntityType = EntityType;
+	}
+
+	void SetMultipliers(float AmalgamMult, float BuildingMult, float LDMult)
+	{
+		LocalAmalgamDamageMult = AmalgamMult;
+		LocalBuildingDamageMult = BuildingMult;
+		LocalLDDamageMult = LDMult;
 	}
 
 	float GetHealth() const { return LocalHealth; }
-	void SetHealth(float InHealth) { LocalHealth = InHealth; }
+	void SetHealth(float InHealth) { LocalHealth = InHealth * GetStrengthMult(); }
 
-	float GetDamage() const { return LocalDamage; }
+	float GetDamage() const { return LocalDamage * GetStrengthMult(); }
 	void SetDamage(float InDamage) { LocalDamage = InDamage; }
+
+	float GetAmalgamMult() const { return LocalAmalgamDamageMult; }
+	float GetBuildingMult() const { return LocalBuildingDamageMult; }
+	float GetLDMult() const { return LocalLDDamageMult; }
+
+	float GetBuildingDamage() const { return LocalDamage; }
+	void SetBuildingDamage(float Damage) { LocalBuildingDamage = Damage; }
 
 	float GetAttackDelay() const { return LocalAttackDelay; }
 	void SetAttackDelay(float InAttackDelay) { LocalAttackDelay = InAttackDelay; }
+
+	float GetStrengthMult() const { return LocalStrengthMult; }
+	void SetStrengthMult(float InStrengthMult)
+	{
+		auto Prev = LocalStrengthMult;
+		LocalStrengthMult = InStrengthMult;
+		auto Ratio = LocalStrengthMult / Prev;
+		LocalHealth *= Ratio;
+	}
+
+	EEntityType GetEntityType() const
+	{
+		return LocalEntityType;
+	}
 
 	/*
 	* Increases the attack timer based on DeltaTimeParameter, if the timer exceeds the attack delay, sets it to 0.
@@ -190,21 +232,32 @@ struct FAmalgamTargetFragment : public FMassFragment
 
 private:
 	FMassEntityHandle TargetEntity;
-	ABuildingParent* TargetBuilding = nullptr;
-	ALDElement* TargetLDElem = nullptr;
+	EEntityType TargetEntityType = EEntityType::EntityTypeNone;
+	TWeakObjectPtr<ABuildingParent> TargetBuilding = nullptr;
+	TWeakObjectPtr<ALDElement> TargetLDElem = nullptr;
+
+	float TotalRangeOffset = TNumericLimits<float>::Max();
 
 public:
 	FMassEntityHandle GetTargetEntityHandle() const { return TargetEntity; }
 	FMassEntityHandle& GetMutableTargetEntityHandle() { return TargetEntity; }
 	void SetTargetEntityHandle(FMassEntityHandle InHandle) { TargetEntity = InHandle; }
 
-	ABuildingParent* GetTargetBuilding() const { return TargetBuilding; }
-	ABuildingParent* GetMutableTargetBuilding() { return TargetBuilding; }
-	void SetTargetBuilding (ABuildingParent* InBuilding) { TargetBuilding = InBuilding; }
+	TWeakObjectPtr<ABuildingParent> GetTargetBuilding() const { return TargetBuilding; }
+	TWeakObjectPtr<ABuildingParent> GetMutableTargetBuilding() { return TargetBuilding; }
+	void SetTargetBuilding(TWeakObjectPtr<ABuildingParent> InBuilding) { TargetBuilding = InBuilding; }
 
-	ALDElement* GetTargetLDElem() const { return TargetLDElem; }
-	ALDElement* GetMutableTargetLDElem() { return TargetLDElem; }
-	void SetTargetLDElem(ALDElement* InLDElement) { TargetLDElem = InLDElement; }
+	TWeakObjectPtr<ALDElement> GetTargetLDElem() const { return TargetLDElem; }
+	TWeakObjectPtr<ALDElement> GetMutableTargetLDElem() { return TargetLDElem; }
+	void SetTargetLDElem(TWeakObjectPtr<ALDElement> InLDElement) { TargetLDElem = InLDElement; }
+
+	float GetTargetRangeOffset(EAmalgamAggro AggroType) const;
+
+	float GetTotalRangeOffset() const { return TotalRangeOffset; }
+	void SetTotalRangeOffset(float NewOffset) { TotalRangeOffset = NewOffset; }
+
+	EEntityType GetEntityType() const { return TargetEntityType; }
+	void SetEntityType(EEntityType InType) { TargetEntityType = InType; }
 
 	void ResetTargets() 
 	{
@@ -225,12 +278,15 @@ public:
 		AcceptanceRadiusAttack = AcceptanceRadiusAttackParam;
 	}
 
-	void CopyPathFromFlux(AFlux* FluxTarget, FVector EntityLocation, bool StartAtBeginning)
+	void CopyPathFromFlux(TWeakObjectPtr<AFlux> FluxTarget, FVector EntityLocation, bool StartAtBeginning)
 	{
+		if (!FluxTarget.IsValid()) return;
+		
 		Path.Empty();
-		if (!FluxTarget) return;
 
-		auto FluxPath = FluxTarget->GetPath();
+		AFlux* FluxPtr = FluxTarget.Get();
+
+		auto FluxPath = FluxPtr->GetPath();
 		if (FluxPath.Num() == 0) return;
 
 		auto StartIndex = StartAtBeginning ? 0 : -1;
@@ -256,21 +312,34 @@ public:
 			Path.Add(FluxPath[i]);
 		}
 
-		FluxUpdateID = FluxTarget->GetUpdateID();
+		FluxUpdateID = FluxPtr->GetUpdateID();
+		FluxUpdateVersion = FluxPtr->GetUpdateVersion();
 	}
 
 	void RecoverPath(FVector EntityLocation)
 	{
-		int ClosestIndex = -1;
-		float SmallestDistance = std::numeric_limits<float>::max();
+		if (Path.Num() == 0) return;
 
-		for (auto Point : Path)
+		int ClosestIndex = -1;
+		float SmallestDistance = TNumericLimits<float>::Max();
+
+		/*for (FVector& Point : Path)
 		{
 			float NextDistance = (Point - EntityLocation).Length();
 			if (NextDistance > SmallestDistance)
 				break;
 
 			ClosestIndex++;
+			SmallestDistance = NextDistance;
+		}*/
+
+		for (int32 Index = 0; Index < Path.Num(); ++Index)
+		{
+			float NextDistance = (Path[Index] - EntityLocation).Length();
+			if (NextDistance > SmallestDistance)
+				continue;
+
+			ClosestIndex = Index;
 			SmallestDistance = NextDistance;
 		}
 
@@ -285,14 +354,36 @@ public:
 		Path.RemoveAt(0);
 	}
 
+	bool IsPathFinal() { return bFinalPath; }
+
+	void MakePathFinal()
+	{
+		bFinalPath = true;
+	}
+
+	bool ShouldRecover() { return bRecoverPath; }
+	void SetShouldRecover(bool Value) { bRecoverPath = Value; }
+
+	uint32 GetUpdateID() { return FluxUpdateID; }
+	uint32 GetUpdateVersion() { return FluxUpdateVersion; }
+
+	float GetAcceptanceAttackRadius() { return AcceptanceRadiusAttack; }
+	float GetAcceptancePathfindingRadius() { return AcceptancePathfindingRadius; }
+
+	
+public:
 	TArray<FVector> Path = TArray<FVector>();
 
+private:
+
 	bool bRecoverPath = false;
+	bool bFinalPath = false;
 
 	float AcceptancePathfindingRadius;
 	float AcceptanceRadiusAttack;
 
 	uint32 FluxUpdateID = -1; // Used to reevaluate path, defaults as -1 so that path is evalutated on first movement iteration
+	uint32 FluxUpdateVersion = -1; // Used to reevaluate path, defaults as -1 so that path is evalutated on first movement iteration
 };
 
 USTRUCT()
@@ -303,16 +394,32 @@ struct FAmalgamStateFragment : public FMassFragment
 private:
 	EAmalgamState AmalgamState = EAmalgamState::Inactive;
 	EAmalgamAggro AggroState = EAmalgamAggro::NoAggro;
+	EAmalgamDeathReason DeathReason = EAmalgamDeathReason::NoReason;
 
 	void NotifyContext(FMassExecutionContext& Context, int32 EntityIndexInContext) { Context.Defer().AddTag<FAmalgamStateChangeTag>(Context.GetEntity(EntityIndexInContext)); }
 
 public:
 	EAmalgamState GetState() const { return AmalgamState; }
 	void SetState(EAmalgamState InState) { AmalgamState = InState; }
-	void SetStateAndNotify(EAmalgamState InState, FMassExecutionContext& Context, int32 EntityIndexInContext) { SetState(InState); NotifyContext(Context, EntityIndexInContext); }
+	void SetStateAndNotify(EAmalgamState InState, FMassExecutionContext& Context, int32 EntityIndexInContext) 
+	{
+		if (AmalgamState == EAmalgamState::Killed) return;
+
+		AmalgamState = InState; 
+		NotifyContext(Context, EntityIndexInContext); 
+	}
 
 	EAmalgamAggro GetAggro() const { return AggroState; }
 	void SetAggro(EAmalgamAggro InAggro) { AggroState = InAggro; }
+	
+	EAmalgamDeathReason GetDeathReason() const { return DeathReason; }
+	void SetDeathReason(EAmalgamDeathReason Reason) { DeathReason = Reason; }
+
+	void Kill(EAmalgamDeathReason Reason, FMassExecutionContext& Context, int32 EntityIndexInContext)
+	{
+		DeathReason = Reason;
+		SetStateAndNotify(EAmalgamState::Killed, Context, EntityIndexInContext);
+	}
 };
 
 /*
@@ -324,20 +431,20 @@ struct FAmalgamFluxFragment : public FMassFragment
 	GENERATED_USTRUCT_BODY()
 
 private:
-	AFlux* Flux;
+	TWeakObjectPtr<AFlux> Flux;
 	int32 SplinePointIndex;	
 
 public:
-	AFlux* GetFlux() const { return Flux; }
-	AFlux* GetMutableFlux() { return Flux; }
-	void SetFlux(AFlux* InFlux) { Flux = InFlux; }
+	TWeakObjectPtr<AFlux> GetFlux() const { return Flux; }
+	TWeakObjectPtr<AFlux> GetMutableFlux() { return Flux; }
+	void SetFlux(TWeakObjectPtr<AFlux> InFlux) { Flux = InFlux; }
 
 	int32 GetSplinePointIndex() const { return SplinePointIndex; }
 	void SetSplinePointIndex(int32 InIndex) { SplinePointIndex = InIndex; }
 	void NextSplinePoint() { ++SplinePointIndex; }
 	bool CheckFluxIsValid() 
 	{
-		bool bIsFluxInvalid = (!GetFlux());
+		bool bIsFluxInvalid = (!GetFlux().IsValid());
 		bool bIsSplinePointExceeded = SplinePointIndex >= GetFlux()->GetSplineForAmalgamsComponent()->GetNumberOfSplinePoints();
 		return (!bIsFluxInvalid && !bIsSplinePointExceeded);
 	}
@@ -375,7 +482,7 @@ struct FAmalgamTransmutationFragment : public FMassFragment
 	GENERATED_USTRUCT_BODY()
 
 private:
-	UTransmutationComponent* TransmutationComponent;
+	TWeakObjectPtr<UTransmutationComponent> TransmutationComponent;
 	int32 UpdateID = -1;
 
 public:
@@ -396,6 +503,30 @@ public:
 	void Update() { UpdateID = TransmutationComponent->GetUpdateID(); }
 };
 
+USTRUCT()
+struct FAmalgamSightFragment : public FMassFragment
+{
+	GENERATED_USTRUCT_BODY()
+
+public:
+
+	void SetParameters(float InRange, float InAngle, VisionType InVisiontype)
+	{
+		BaseSightRange = InRange;
+		BaseSightAngle = InAngle;
+		BaseSightType = InVisiontype;
+	}
+
+	float GetRange() { return BaseSightRange; }
+	float GetAngle() { return BaseSightAngle; }
+	VisionType GetType() { return BaseSightType; }
+
+private:
+	float BaseSightRange;
+	float BaseSightAngle;
+	VisionType BaseSightType;
+};
+
 /*
 * ------------------------ Parameters Fragments ------------------------
 * Used w/ the Traits to give modularity and customizable parameters
@@ -414,21 +545,38 @@ struct FAmalgamCombatParams : public FMassFragment
 {
 	GENERATED_USTRUCT_BODY()
 	UPROPERTY(EditAnywhere, Category = "Amalgam|Combat")
+	TEnumAsByte<EAmalgamAggroPriority> AggroPriority = EAmalgamAggroPriority::Standard;
+	UPROPERTY(EditAnywhere, Category = "Amalgam|Combat")
 	float BaseDamage;
+	UPROPERTY(EditAnywhere, Category = "Amalgam|Combat")
+	float BaseBuildingDamage;
 	UPROPERTY(EditAnywhere, Category = "Amalgam|Combat")
 	float BaseAttackDelay;
 	UPROPERTY(EditAnywhere, Category = "Amalgam|Combat")
 	float BaseRange;
+	UPROPERTY(EditAnywhere, Category = "Amalgam|Combat")
+	float AmalgamDamageMultiplier = 1.f;
+	UPROPERTY(EditAnywhere, Category = "Amalgam|Combat")
+	float BuildingDamageMultiplier = 1.f;
+	UPROPERTY(EditAnywhere, Category = "Amalgam|Combat")
+	float LDDamageMultiplier = 1.f;
+	UPROPERTY(EditAnywhere, Category = "Amalgam|Combat")
+	EEntityType EntityType = EEntityType::EntityTypeNone;
 };
 
 USTRUCT()
 struct FAmalgamMovementParams : public FMassFragment
 {
 	GENERATED_USTRUCT_BODY()
+	
 	UPROPERTY(EditAnywhere, Category = "Amalgam|Movement")
 	float BaseSpeed;
+	
 	UPROPERTY(EditAnywhere, Category = "Amalgam|Movement")
 	float BaseRushSpeed;
+	
+	UPROPERTY(EditAnywhere, Category = "Amalgam|Movement")
+	float SpeedMultiplier = 1;
 };
 
 USTRUCT()
@@ -460,7 +608,11 @@ struct FAmalgamNiagaraParams : public FMassFragment
 {
 	GENERATED_USTRUCT_BODY()
 	UPROPERTY(EditAnywhere, Category = "Amalgam|Niagara")
-	UNiagaraSystem* NiagaraSystem;
+	bool bUseBlueprints = false;
+	UPROPERTY(EditAnywhere, Category = "Amalgam|Niagara")
+	TWeakObjectPtr<UNiagaraSystem> NiagaraSystem;
+	UPROPERTY(EditAnywhere, Category = "Amalgam|Niagara")
+	TSubclassOf<AActor> BPVisualisation;
 	UPROPERTY(EditAnywhere, Category = "Amalgam|Niagara")
 	float NiagaraHeightOffset = 20.f;
 	UPROPERTY(EditAnywhere, Category = "Amalgam|Niagara")
@@ -531,17 +683,32 @@ struct FAmalgamNiagaraFragment : public FMassFragment
 	GENERATED_USTRUCT_BODY()
 
 private:
-	UNiagaraSystem* NiagaraSystem;
+	TWeakObjectPtr<UNiagaraSystem> NiagaraSystem;
+	TSubclassOf<AActor> BPVisualisation;
 	float HeightOffset;
 	FVector RotationOffset;
+
+	bool bUseBlueprint = false;
 	
 public:
-	void SetParameters(UNiagaraSystem* SystemParam, float HeightOffsetParam, FVector RotOffsetParam)
+	void SetParameters(TWeakObjectPtr<UNiagaraSystem> SystemParam, float HeightOffsetParam, FVector RotOffsetParam, bool UseBlueprint = false)
 	{
 		NiagaraSystem = SystemParam;
 		HeightOffset = HeightOffsetParam;
 		RotationOffset = RotOffsetParam;
+		bUseBlueprint = UseBlueprint;
 	}
 
-	UNiagaraSystem* GetSystem() { return NiagaraSystem; }
+	void SetParameters(TSubclassOf<AActor> BP, float HeightOffsetParam, FVector RotOffsetParam, bool UseBlueprint = true)
+	{
+		BPVisualisation = BP;
+		HeightOffset = HeightOffsetParam;
+		RotationOffset = RotOffsetParam;
+		bUseBlueprint = UseBlueprint;
+	}
+
+	TWeakObjectPtr<UNiagaraSystem> GetSystem() { return NiagaraSystem; }
+	TSubclassOf<AActor> GetBP() { return BPVisualisation; }
+
+	bool UseBP() { return bUseBlueprint; }
 };

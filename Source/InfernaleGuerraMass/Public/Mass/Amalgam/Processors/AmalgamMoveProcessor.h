@@ -17,6 +17,7 @@
  * 
  */
 
+class AGameModeInfernale;
 struct FAmalgamFluxFragment;
 struct FAmalgamTargetFragment;
 struct FAmalgamAggroFragment;
@@ -39,6 +40,7 @@ private:
 	FMassEntityQuery EntityQuery;
 	
 	AAmalgamVisualisationManager* VisualisationManager;
+	AGameModeInfernale* GameModeInfernale;
 
 	float DistanceThreshold = 15.f;
 

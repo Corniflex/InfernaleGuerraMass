@@ -32,6 +32,7 @@ UAmalgamKillObserver::UAmalgamKillObserver() : EntityQuery(*this)
 void UAmalgamKillObserver::ConfigureQueries()
 {
 	EntityQuery.AddRequirement<FAmalgamTargetFragment>(EMassFragmentAccess::ReadWrite);
+	EntityQuery.AddRequirement<FAmalgamStateFragment>(EMassFragmentAccess::ReadOnly);
 	
 	EntityQuery.AddTagRequirement<FAmalgamKillTag>(EMassFragmentPresence::All);
 
@@ -52,19 +53,62 @@ void UAmalgamKillObserver::Execute(FMassEntityManager& EntityManager, FMassExecu
 
 		check(VisualisationManager);
 	}
+	/*if (!FogManager)
+	{
+		TArray<AActor*> OutActors;
+		UGameplayStatics::GetAllActorsOfClass(GetWorld(), AFogOfWarManager::StaticClass(), OutActors);
+
+		if (OutActors.Num() > 0)
+			FogManager = static_cast<AFogOfWarManager*>(OutActors[0]);
+		else
+			FogManager = nullptr;
+
+		check(FogManager);
+	}*/
+
 	EntityQuery.ForEachEntityChunk(EntityManager, Context, [this](FMassExecutionContext& Context)
 		{
 			TArrayView<FAmalgamTargetFragment> TargetFragView = Context.GetMutableFragmentView<FAmalgamTargetFragment>();
+			TArrayView<FAmalgamStateFragment> StateFragView = Context.GetMutableFragmentView<FAmalgamStateFragment>();
 			
+			TMap<TWeakObjectPtr<ASoulBeacon>, int> RewardMap;
+
 			for (int32 Index = 0; Index < Context.GetNumEntities(); ++Index)
 			{
-				FMassEntityHandle Handle = TargetFragView[Index].GetTargetEntityHandle();
+				EAmalgamDeathReason DeathReason = StateFragView[Index].GetDeathReason();
 
-				if(ASpatialHashGrid::Contains(Handle))
-					ASpatialHashGrid::GetMutableEntityData(Handle)->AggroCount--;
+				FMassEntityHandle Handle = Context.GetEntity(Index);
+				FMassEntityHandle TargetHandle = TargetFragView[Index].GetTargetEntityHandle();
 
-				ASpatialHashGrid::RemoveEntityFromGrid(Context.GetEntity(Index));
-				VisualisationManager->RemoveFromMapP(Context.GetEntity(Index));
+				//HashGridCell* Cell = ASpatialHashGrid::GetCellRef(Handle);
+				//TWeakObjectPtr<ASoulBeacon> Beacon = ASpatialHashGrid::IsInSoulBeaconRangeByCell(Cell);
+				TWeakObjectPtr<ASoulBeacon> Beacon = ASpatialHashGrid::IsInSoulBeaconRange(Handle);
+				if (Beacon != nullptr && DeathReason == EAmalgamDeathReason::Eliminated)
+				{
+					//Beacon->Reward(ESoulBeaconRewardType::RewardAmalgam);
+					if (RewardMap.Contains(Beacon)) RewardMap[Beacon]++;
+					else RewardMap.Add(Beacon, 1);
+				}
+
+				if(ASpatialHashGrid::Contains(TargetHandle))
+					ASpatialHashGrid::GetMutableEntityData(TargetHandle)->AggroCount--;
+
+				/*if (FogManager->Contains(Handle))
+					FogManager->RemoveMassEntityVision(Handle);*/
+
+				ASpatialHashGrid::RemoveEntityFromGrid(Handle);
+				VisualisationManager->RemoveFromMapP(Handle);
+
+				if (DeathReason == EAmalgamDeathReason::Error)
+					UE_LOG(LogTemp, Error, TEXT("Error caused amalgam death"));
+			}
+
+			TArray<TWeakObjectPtr<ASoulBeacon>> Keys;
+			RewardMap.GenerateKeyArray(Keys);
+			for (int32 BeaconIndex = 0; BeaconIndex < Keys.Num(); ++BeaconIndex)
+			{
+				TWeakObjectPtr<ASoulBeacon> Beacon = Keys[BeaconIndex];
+				Beacon->RewardMultiple(ESoulBeaconRewardType::RewardAmalgam, RewardMap[Beacon]);
 			}
 
 			if(bDebug) GEngine->AddOnScreenDebugMessage(-1, 2.5f, FColor::Green, FString::Printf(TEXT("KillObserver : Cleared %d Entities"), Context.GetNumEntities()));

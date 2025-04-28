@@ -17,7 +17,10 @@
 #include <Mass/Collision/SpatialHashGrid.h>
 
 //Damageable Component
+#include "Component/ActorComponents/BattleManagerComponent.h"
 #include "Component/ActorComponents/DamageableComponent.h"
+#include "Manager/UnitActorManager.h"
+#include "UnitAsActor/UnitActor.h"
 
 UAmalgamFightProcessor::UAmalgamFightProcessor() : EntityQuery(*this)
 {
@@ -74,7 +77,9 @@ void UAmalgamFightProcessor::Execute(FMassEntityManager& EntityManager, FMassExe
 				FAmalgamTransmutationFragment& TransFragment = TransFragView[Index];
 				FAmalgamPathfindingFragment& PathfindingFragment = PathFragView[Index];
 
-				if(!CheckTargetValidity(TargetFragment, StateFragment, OwnerFragment.GetOwner()))
+				const auto OwnerInfo = OwnerFragment.GetOwner();
+				
+				if(!CheckTargetValidity(TargetFragment, StateFragment, OwnerInfo))
 				{
 					StateFragment.SetAggro(EAmalgamAggro::NoAggro);
 					StateFragment.SetStateAndNotify(EAmalgamState::FollowPath, Context, Index);
@@ -86,15 +91,19 @@ void UAmalgamFightProcessor::Execute(FMassEntityManager& EntityManager, FMassExe
 				switch (StateFragment.GetAggro())
 				{
 				case EAmalgamAggro::Amalgam:
-					bShouldStillAggro = ExecuteAmalgamFight(TargetFragment.GetTargetEntityHandle(), TransFragment.GetUnitDamageModifier(FightFragment.GetDamage()), Location, AggroFragment.GetFightRange());
+					{
+					FMassEntityHandle TargetHandle = TargetFragment.GetTargetEntityHandle();
+					EEntityType Type = ASpatialHashGrid::GetEntityData(TargetHandle).EntityType;
+					bShouldStillAggro = ExecuteAmalgamFight(TargetHandle, TransFragment.GetUnitDamageModifier(FightFragment.GetDamage() * FightFragment.GetAmalgamMult()), Location, AggroFragment.GetFightRange(), TargetFragment.GetTotalRangeOffset(), OwnerInfo, AggroFragment.GetEntityType(), Type);
 					break;
+					}
 				
 				case EAmalgamAggro::Building:
-					bShouldStillAggro = ExecuteBuildingFight(TargetFragment.GetTargetBuilding(), TransFragment.GetBuildingDamageModifier(FightFragment.GetDamage()), OwnerFragment.GetOwner(), Location, AggroFragment.GetFightRange());
+					bShouldStillAggro = ExecuteBuildingFight(TargetFragment.GetTargetBuilding(), TransFragment.GetBuildingDamageModifier(FightFragment.GetBuildingDamage() * FightFragment.GetBuildingMult()), OwnerFragment.GetOwner(), AggroFragment.GetEntityType(), Location, AggroFragment.GetFightRange(), TargetFragment.GetTotalRangeOffset());
 					break;
 
 				case EAmalgamAggro::LDElement:
-					bShouldStillAggro = ExecuteLDFight(TargetFragment.GetTargetLDElem(), TransFragment.GetBuildingDamageModifier(FightFragment.GetDamage()), OwnerFragment.GetOwner(), Location, AggroFragment.GetFightRange());
+					bShouldStillAggro = ExecuteLDFight(TargetFragment.GetTargetLDElem(), TransFragment.GetBuildingDamageModifier(FightFragment.GetDamage() * FightFragment.GetLDMult()), OwnerFragment.GetOwner(), AggroFragment.GetEntityType(), Location, AggroFragment.GetFightRange(), TargetFragment.GetTotalRangeOffset());
 					break;
 
 				default:
@@ -110,49 +119,124 @@ void UAmalgamFightProcessor::Execute(FMassEntityManager& EntityManager, FMassExe
 				StateFragment.SetState(EAmalgamState::FollowPath);
 				FightFragment.ResetTimer();
 				TargetFragment.ResetTargets();
-				PathfindingFragment.bRecoverPath = true;
+				PathfindingFragment.SetShouldRecover(true);
 			}
 		}));
 }
 
-bool UAmalgamFightProcessor::ExecuteAmalgamFight(FMassEntityHandle TargetHandle, float Damage, FVector AttackerLocation, float AttackerRange)
+void UAmalgamFightProcessor::GetBattleManager()
+{
+	TArray<AActor*> OutActors;
+	UGameplayStatics::GetAllActorsOfClass(GetWorld(), AUnitActorManager::StaticClass(), OutActors);
+
+	if (OutActors.Num() == 0)
+	{
+		GEngine->AddOnScreenDebugMessage(-1, 2.5f, FColor::Red, TEXT("AmalgamFightProcessor : Unable to find UnitActorManager, skipping execution."));
+		return;
+	}
+
+	auto UnitActorManager = static_cast<AUnitActorManager*>(OutActors[0]);
+	if (!UnitActorManager) return;
+	
+	BattleManager = UnitActorManager->GetBattleManagerComponent().Get();
+}
+
+bool UAmalgamFightProcessor::ExecuteAmalgamFight(FMassEntityHandle TargetHandle, float Damage, FVector AttackerLocation, float AttackerRange, float DistanceOffset, FOwner AttackerOwner, EEntityType AttackerType, EEntityType TargetType)
 {
 	GridCellEntityData* Data = ASpatialHashGrid::GetMutableEntityData(TargetHandle);
+	if (!Data) return false;
 
-	if ((AttackerLocation - Data->Location).Length() >= AttackerRange) return false;
+	if ((AttackerLocation - Data->Location).Length() - DistanceOffset >= AttackerRange) return false;
 
 	Data->DamageEntity(Damage);
 
-	GEngine->AddOnScreenDebugMessage(-1, 2.5, FColor::Orange, FString::Printf(TEXT("Amalgam attacked")));
+	if (!BattleManager) GetBattleManager();
 
-	if (ASpatialHashGrid::GetEntityData(TargetHandle).EntityHealth <= 0.f)
-		return false;
+	if (BattleManager)
+	{
+		FBattleInfo BattleInfo;
+		BattleInfo.AttackerUnitType = AttackerType;
+		BattleInfo.TargetUnitType = TargetType;
+		const auto UnitLoc = AttackerLocation;
+		const auto TargetLoc = Data->Location;
+		BattleInfo.BattlePositionAttackerWorld = FVector2D(UnitLoc.X, UnitLoc.Y);
+		BattleInfo.BattlePositionTargetWorld = FVector2D(TargetLoc.X, TargetLoc.Y);
+		BattleInfo.UnitTargetTypeTarget = EUnitTargetType::UTargetUnit;
+		BattleInfo.AttackerOwner = AttackerOwner;
+		BattleInfo.TargetOwner = Data->Owner;
+		BattleManager->AtPosBattleInfo(BattleInfo);
+	}
+
+	if(bDebug) GEngine->AddOnScreenDebugMessage(-1, 2.5, FColor::Orange, FString::Printf(TEXT("Amalgam attacked")));
+	if (ASpatialHashGrid::GetEntityData(TargetHandle).EntityHealth <= 0.f) return false;
 
 	return true;
 }
 
-bool UAmalgamFightProcessor::ExecuteBuildingFight(ABuildingParent* TargetBuilding, float Damage, FOwner AttackOwner, FVector AttackerLocation, float AttackerRange)
+bool UAmalgamFightProcessor::ExecuteBuildingFight(TWeakObjectPtr<ABuildingParent> TargetBuilding, float Damage, FOwner AttackOwner, EEntityType AttackerType, FVector AttackerLocation, float AttackerRange, float DistanceOffset)
 {
-	if ((AttackerLocation - TargetBuilding->GetActorLocation()).Length() >= AttackerRange) return false;
+	if ((AttackerLocation - TargetBuilding->GetActorLocation()).Length() - DistanceOffset >= AttackerRange) return false;
 	
 	TargetBuilding->GetDamageableComponent()->DamageHealthOwner(Damage, false, AttackOwner);
 
-	GEngine->AddOnScreenDebugMessage(-1, 2.5f, FColor::Orange, TEXT("Amalgam attacked building"));
+	if (bDebug) GEngine->AddOnScreenDebugMessage(-1, 2.5f, FColor::Orange, TEXT("Amalgam attacked building"));
 
-	if (TargetBuilding->GetOwner().Team == AttackOwner.Team || !TargetBuilding)
+	if (!TargetBuilding.IsValid())
 		return false;
+	const auto TargetOwner = TargetBuilding->GetOwner();
+	if (TargetOwner.Team == AttackOwner.Team)
+		return false;
+
+	if (!BattleManager) GetBattleManager();
+
+	if (BattleManager)
+	{
+		FBattleInfo BattleInfo;
+		BattleInfo.AttackerUnitType = AttackerType;
+		BattleInfo.TargetUnitType = EEntityType::EntityTypeCity;
+		const auto UnitLoc = AttackerLocation;
+		const auto TargetLoc = TargetBuilding.Get()->GetActorLocation();
+		BattleInfo.BattlePositionAttackerWorld = FVector2D(UnitLoc.X, UnitLoc.Y);
+		BattleInfo.BattlePositionTargetWorld = FVector2D(TargetLoc.X, TargetLoc.Y);
+		BattleInfo.UnitTargetTypeTarget = EUnitTargetType::UTargetBuilding;
+		BattleInfo.AttackerOwner = AttackOwner;
+		BattleInfo.TargetOwner = TargetOwner;
+		BattleManager->AtPosBattleInfo(BattleInfo);
+	}
 
 	return true;
 }
 
-bool UAmalgamFightProcessor::ExecuteLDFight(ALDElement* Element, float Damage, FOwner AttackOwner, FVector AttackerLocation, float AttackerRange)
+//Distance offset is used to not just compare center locations, but also take radius into account
+bool UAmalgamFightProcessor::ExecuteLDFight(TWeakObjectPtr<ALDElement> Element, float Damage, FOwner AttackOwner, EEntityType AttackerType, FVector AttackerLocation, float AttackerRange, float DistanceOffset)
 {
-	if ((AttackerLocation - Element->GetActorLocation()).Length() >= AttackerRange) return false;
+	if ((AttackerLocation - Element->GetActorLocation()).Length() - DistanceOffset >= AttackerRange) return false;
 
 	auto TargetDamageable = Cast<IDamageable>(Element);
 	TargetDamageable->DamageHealthOwner(Damage, false, AttackOwner);
 	
-	GEngine->AddOnScreenDebugMessage(-1, 2.5f, FColor::Orange, TEXT("Amalgam attacked LD"));
+	if (bDebug) GEngine->AddOnScreenDebugMessage(-1, 2.5f, FColor::Orange, TEXT("Amalgam attacked LD"));
+
+	if (!BattleManager) GetBattleManager();
+
+	if (BattleManager)
+	{
+		FOwner NatureOwner = FOwner();
+		NatureOwner.Team = ETeam::NatureTeam;
+		NatureOwner.Player = EPlayerOwning::Nature;
+		
+		FBattleInfo BattleInfo;
+		BattleInfo.AttackerUnitType = AttackerType;
+		BattleInfo.TargetUnitType = Element->GetEntityType();
+		const auto UnitLoc = AttackerLocation;
+		const auto TargetLoc = Element.Get()->GetActorLocation();
+		BattleInfo.BattlePositionAttackerWorld = FVector2D(UnitLoc.X, UnitLoc.Y);
+		BattleInfo.BattlePositionTargetWorld = FVector2D(TargetLoc.X, TargetLoc.Y);
+		BattleInfo.UnitTargetTypeTarget = EUnitTargetType::UTargetNeutralCamp;
+		BattleInfo.AttackerOwner = AttackOwner;
+		BattleInfo.TargetOwner = NatureOwner;
+		BattleManager->AtPosBattleInfo(BattleInfo);
+	}
 
 	return true;
 }
@@ -166,13 +250,13 @@ bool UAmalgamFightProcessor::CheckTargetValidity(FAmalgamTargetFragment& TgtFrag
 
 	case EAmalgamAggro::Building:
 	{
-		ABuildingParent* Tgt = TgtFrag.GetMutableTargetBuilding();
+		TWeakObjectPtr<ABuildingParent> Tgt = TgtFrag.GetMutableTargetBuilding();
 		return Tgt != nullptr && Tgt->GetOwner().Team != Owner.Team;
 	}
 	case EAmalgamAggro::LDElement:
 	{
-		ALDElement* Tgt = TgtFrag.GetMutableTargetLDElem();
-		return Tgt != nullptr && ASpatialHashGrid::Contains(Tgt->GetActorLocation(), Tgt);
+		TWeakObjectPtr<ALDElement> Tgt = TgtFrag.GetMutableTargetLDElem();
+		return Tgt.IsValid() && ASpatialHashGrid::Contains(Tgt->GetActorLocation(), Tgt);
 	}
 	default:
 		return false;

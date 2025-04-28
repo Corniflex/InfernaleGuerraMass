@@ -6,20 +6,7 @@
 // Unreal Includes
 #include "Engine/World.h"
 #include "MassEntityTemplateRegistry.h"
-#include "MassEntityManager.h"
-#include "MassSpawnerTypes.h"
-#include "MassEntityUtils.h"
-#include "MassCommonTypes.h"
 #include "MassCommonFragments.h"
-#include "MassEntityView.h"
-#include "SharedStruct.h"
-#include "StructUtils.h"
-#include "StructUtilsTypes.h"
-#include "Serialization/ArchiveCrc32.h"
-#include "StructView.h"
-
-#include "NiagaraFunctionLibrary.h"
-#include <MassRepresentationSubsystem.h>
 
 // Custom Includes
 #include "Mass/Army/AmalgamFragments.h"
@@ -44,14 +31,17 @@ void UAmalgamTraitBase::BuildTemplate(FMassEntityTemplateBuildContext& BuildCont
 	FAmalgamNiagaraFragment& NiagFrag = BuildContext.AddFragment_GetRef<FAmalgamNiagaraFragment>();
 	FAmalgamPathfindingFragment& PathFrag = BuildContext.AddFragment_GetRef<FAmalgamPathfindingFragment>();
 	FAmalgamTransmutationFragment& TransmutFrag = BuildContext.AddFragment_GetRef<FAmalgamTransmutationFragment>();
+	FAmalgamSightFragment& SightFrag = BuildContext.AddFragment_GetRef<FAmalgamSightFragment>();
 		
 	TransmutFrag.Init(World);
 
-	MvtFrag.SetParameters(MovementParams.BaseSpeed, MovementParams.BaseRushSpeed);
-	AgrFrag.SetParameters(DetectionParams.BaseDetectionRange, CombatParams.BaseRange, DetectionParams.BaseDetectionAngle, DetectionParams.TargetableRange);
-	FghtFrag.SetParameters(HealthParams.BaseHealth, CombatParams.BaseDamage, CombatParams.BaseAttackDelay);
-	NiagFrag.SetParameters(NiagaraParams.NiagaraSystem, NiagaraParams.NiagaraHeightOffset, NiagaraParams.NiagaraRotationOffset);
+	MvtFrag.SetParameters(MovementParams.BaseSpeed, MovementParams.BaseRushSpeed, MovementParams.SpeedMultiplier);
+	AgrFrag.SetParameters(DetectionParams.BaseDetectionRange, CombatParams.BaseRange, DetectionParams.BaseDetectionAngle, DetectionParams.TargetableRange, CombatParams.EntityType);
+	FghtFrag.SetParameters(HealthParams.BaseHealth, CombatParams.BaseDamage, CombatParams.BaseAttackDelay, CombatParams.BaseBuildingDamage, CombatParams.EntityType);
+	FghtFrag.SetMultipliers(CombatParams.AmalgamDamageMultiplier, CombatParams.BuildingDamageMultiplier, CombatParams.LDDamageMultiplier);
+	NiagFrag.SetParameters(NiagaraParams.BPVisualisation, NiagaraParams.NiagaraHeightOffset, NiagaraParams.NiagaraRotationOffset);
 	PathFrag.SetParameters(AcceptanceParams.AcceptancePathfindingRadius, AcceptanceParams.AcceptanceRadiusAttack);
+	SightFrag.SetParameters(SightParams.BaseSightRange, SightParams.BaseSightAngle, SightParams.BaseSightType);
 
 	//FMassEntityManager& EntityManager = UE::Mass::Utils::GetEntityManagerChecked(World);
 	

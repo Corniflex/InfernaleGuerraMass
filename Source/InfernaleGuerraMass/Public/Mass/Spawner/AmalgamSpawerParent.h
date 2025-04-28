@@ -5,7 +5,6 @@
 #include "CoreMinimal.h"
 #include "MassSpawner.h"
 #include <Mass/Amalgam/Data/AmalgamDataStruct.h>
-#include "GameMode/Infernale/PlayerControllerInfernale.h"
 #include "Interfaces/Ownable.h"
 
 #include "AmalgamSpawerParent.generated.h"
@@ -43,11 +42,11 @@ public:
 	static TArray<AAmalgamSpawnerParent*> Spawners;
 	
 	void Initialize(USpawnerComponent* NewSpawnerComponent, int32 EntitySpawnCount);
-	AFlux* GetFlux();
+	TWeakObjectPtr<AFlux> GetFlux();
 
 	inline FOwner GetOwner() { return Owner; }
 	inline FAmalgamSpawnData GetAmalgamData() { return AmalgamData; }
-	inline void ReplaceWithFluxes(TArray<AFlux*> NewFluxes) { Fluxes = NewFluxes; }
+	inline void ReplaceWithFluxes(TArray<TWeakObjectPtr<AFlux>> NewFluxes) { Fluxes = NewFluxes; }
 	inline bool CanDequeueSpawnIndex() { return !SpawnQueue.IsEmpty(); }
 	inline UNiagaraSystem* GetNiagaraSystem() { return NiagaraSystem; }
 	inline UNiagaraComponent* GetNiagaraComponent() { return NiagaraComponent; }
@@ -59,6 +58,8 @@ public:
 	void UpdateOwner();
 	void PostRegister();
 	bool IsEnabled() { return bIsEnabled; }
+
+	float GetStrengthMultiplier();
 
 protected:
 	virtual void BeginPlay() override;
@@ -83,10 +84,14 @@ protected:
 
 	bool bIsEnabled = true; // Check if portal should spawn units or not
 
-	TArray<AFlux*> Fluxes = TArray<AFlux*>();
+	TArray<TWeakObjectPtr<AFlux>> Fluxes = TArray<TWeakObjectPtr<AFlux>>();
 	TQueue<int> SpawnQueue = TQueue<int>();
 
 	USpawnerComponent* SpawnerComponent;
 
 	UNiagaraComponent* NiagaraComponent;
+
+private:
+
+	bool bDebug = false;
 };

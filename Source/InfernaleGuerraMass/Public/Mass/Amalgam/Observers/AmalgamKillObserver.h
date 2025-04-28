@@ -12,6 +12,8 @@
 /**
  * 
  */
+class AFogOfWarManager;
+
 UCLASS()
 class INFERNALETESTING_API UAmalgamKillObserver : public UMassObserverProcessor
 {
@@ -27,6 +29,7 @@ protected:
 private:
 	FMassEntityQuery EntityQuery;
 	AAmalgamVisualisationManager* VisualisationManager;
+	AFogOfWarManager* FogManager;
 
-	bool bDebug = true;
+	bool bDebug = false;
 };

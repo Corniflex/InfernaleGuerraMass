@@ -13,25 +13,19 @@
 #include "MassExecutionContext.h"
 #include <MassEntityTemplateRegistry.h>
 
-//Subsystem
-#include "MassSignalSubsystem.h"
-
 //Spawner
 #include "Mass/Spawner/AmalgamSpawerParent.h"
 
 //Spatial hash grid
 #include <Mass/Collision/SpatialHashGrid.h>
 
-//Niagara
-#include "NiagaraFunctionLibrary.h"
-
 // Visual Manager
 #include "Manager/AmalgamVisualisationManager.h"
 
+//FogofWarManager
+#include "FogOfWar/FogOfWarManager.h"
+
 //Misc
-#include "Components/SplineComponent.h"
-#include <Component/ActorComponents/SpawnerComponent.h>
-#include "LD/Buildings/BuildingParent.h"
 #include "Kismet/GameplayStatics.h"
 
 UAmalgamInitializeProcessor::UAmalgamInitializeProcessor() : EntityQuery(*this)
@@ -61,6 +55,7 @@ void UAmalgamInitializeProcessor::ConfigureQueries()
 	EntityQuery.AddRequirement<FAmalgamNiagaraFragment>(EMassFragmentAccess::ReadWrite);
 
 	EntityQuery.AddRequirement<FAmalgamTransmutationFragment>(EMassFragmentAccess::ReadWrite);
+	EntityQuery.AddRequirement<FAmalgamSightFragment>(EMassFragmentAccess::ReadWrite);
 	
 	EntityQuery.AddTagRequirement<FAmalgamInitializeTag>(EMassFragmentPresence::All);
 
@@ -81,6 +76,24 @@ void UAmalgamInitializeProcessor::Execute(FMassEntityManager& EntityManager, FMa
 
 		check(VisualisationManager);
 	}
+	if (!FogManager)
+	{
+		TArray<AActor*> OutActors;
+		UGameplayStatics::GetAllActorsOfClass(GetWorld(), AFogOfWarManager::StaticClass(), OutActors);
+
+		if (OutActors.Num() > 0)
+			FogManager = static_cast<AFogOfWarManager*>(OutActors[0]);
+		else
+			FogManager = nullptr;
+
+		//check(FogManager);
+		if (!FogManager)
+		{
+			if(bDebug) GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Red, TEXT("InitializeProcessor : Unable to find fog of war manager, skipping execution."));
+			//return;
+		}
+	}
+
 	EntityQuery.ForEachEntityChunk(EntityManager, Context, ([this](FMassExecutionContext& Context)
 		{
 
@@ -96,16 +109,11 @@ void UAmalgamInitializeProcessor::Execute(FMassEntityManager& EntityManager, FMa
 			TArrayView<FAmalgamNiagaraFragment> NiagaraFragView = Context.GetMutableFragmentView<FAmalgamNiagaraFragment>();
 			TArrayView<FAmalgamStateFragment> StateFragView = Context.GetMutableFragmentView<FAmalgamStateFragment>();
 			TArrayView<FAmalgamTransmutationFragment> TransmFragView = Context.GetMutableFragmentView<FAmalgamTransmutationFragment>();
+			TArrayView<FAmalgamSightFragment> SightFragView = Context.GetMutableFragmentView<FAmalgamSightFragment>();
 			
 			for (int32 Index = 0; Index < Context.GetNumEntities(); ++Index)
 			{
 				if(bDebug) GEngine->AddOnScreenDebugMessage(-1, 2.5f, FColor::Orange, FString::Printf(TEXT("AmalgamInitializeProcessor : Initializing Amalgam %d"), Index));
-
-				if (Index == 0 && bDebug)
-				{
-					CycleCount++;
-					GEngine->AddOnScreenDebugMessage(-1, 2.5f, FColor::Purple, FString::Printf(TEXT("> Server InitCycles : %d"), CycleCount));
-				}
 
 				FTransformFragment* TransformFragment = &TransformView[Index];
 				FTransform& EntityTransform = TransformFragment->GetMutableTransform();
@@ -121,16 +129,17 @@ void UAmalgamInitializeProcessor::Execute(FMassEntityManager& EntityManager, FMa
 				for (int32 SpawnerIndex = 1; SpawnerIndex < Spawners.Num(); ++SpawnerIndex)
 				{
 					float newDist = (Spawners[SpawnerIndex]->GetActorLocation() - EntityTransform.GetLocation()).Length();
-					
-					ClosestSpawnerIndex = MinSpawnerDistance < newDist ? ClosestSpawnerIndex : SpawnerIndex;
-					MinSpawnerDistance = MinSpawnerDistance < newDist ? MinSpawnerDistance : newDist;
+
+					auto Closer = MinSpawnerDistance < newDist;
+					ClosestSpawnerIndex = Closer ? ClosestSpawnerIndex : SpawnerIndex;
+					MinSpawnerDistance = Closer ? MinSpawnerDistance : newDist;
 				}
 				auto CurrentSpawner = Spawners[ClosestSpawnerIndex];
 				auto Flux = CurrentSpawner->GetFlux();
 				
-				if (!Flux)
+				if (!Flux.IsValid())
 				{
-					GEngine->AddOnScreenDebugMessage(-1, 2.5f, FColor::Red, FString::Printf(TEXT("AmalgamInitializeProcessor : No Flux Found")));
+					if(bDebug) GEngine->AddOnScreenDebugMessage(-1, 2.5f, FColor::Red, FString::Printf(TEXT("AmalgamInitializeProcessor : No Flux Found")));
 					Context.Defer().SwapTags<FAmalgamInitializeTag, FAmalgamKillTag>(Context.GetEntity(Index));
 					continue;
 				}
@@ -145,10 +154,19 @@ void UAmalgamInitializeProcessor::Execute(FMassEntityManager& EntityManager, FMa
 				FAmalgamTransmutationFragment& TransmutationFragment = TransmFragView[Index];
 				FAmalgamGridFragment& GridFragment = GridFragView[Index];
 				FAmalgamOwnerFragment& OwnerFragment = OwnerFragView[Index];
-				
+				FAmalgamSightFragment& SightFragment = SightFragView[Index];
+
+
+				auto StrMult = CurrentSpawner->GetStrengthMultiplier();
+				FightFragment.SetStrengthMult(StrMult);
+
+				//FogManager->AddMassEntityVision(Context.GetEntity(Index), SightFragment.GetRange(), SightFragment.GetType());
+
 				OwnerFragment.SetOwner(CurrentSpawner->GetOwner());
 
 				if(bDebug) GEngine->AddOnScreenDebugMessage(-1, .5f, FColor::Orange, FString::Printf(TEXT("AmalgamInitializeProcessor : Spawner team is %d"), CurrentSpawner->GetOwner().Team));
+
+
 
 				// Reference entity in grid
 				FTransform* Transform = &TransformView[Index].GetMutableTransform();
@@ -158,15 +176,28 @@ void UAmalgamInitializeProcessor::Execute(FMassEntityManager& EntityManager, FMa
 
 				GridFragment.SetGridCoordinates(GridCoord);
 
-				if(!ASpatialHashGrid::AddEntityToGrid(Location, Context.GetEntity(Index), OwnerFragment.GetOwner(), TransformFragment, TransmutationFragment.GetHealthModifier(FightFragment.GetHealth())))
+				if(!ASpatialHashGrid::AddEntityToGrid(Location, Context.GetEntity(Index), OwnerFragment.GetOwner(), TransformFragment, TransmutationFragment.GetHealthModifier(FightFragment.GetHealth()), AggroFragView[Index].GetTargetableRange(), FightFragment.GetEntityType()))
 				{
 					if (bDebug) GEngine->AddOnScreenDebugMessage(-1, 2.5f, FColor::Red, TEXT("AmalgamInitializeProcessor : Failed to add entity to cell"));
 					Context.Defer().AddTag<FAmalgamKillTag>(Context.GetEntity(Index));
 				}
+				const auto SpeedMult = Flux->GetAmalgamsSpeedMult();
+				const auto Handle = Context.GetEntity(Index);
+				
+				FDataForSpawnVisual DataForSpawnVisual = FDataForSpawnVisual();
+				DataForSpawnVisual.EntityOwner = OwnerFragment.GetOwner();
+				DataForSpawnVisual.World = Context.GetWorld();
+				DataForSpawnVisual.BPVisualisation = NiagaraFragment.GetBP();
+				DataForSpawnVisual.Location = Location;
+				DataForSpawnVisual.SpeedMultiplier = SpeedMult;
+				DataForSpawnVisual.EntityType = FightFragment.GetEntityType();
+				
+				if(NiagaraFragment.UseBP())
+					VisualisationManager->CreateAndAddToMapP(Handle, DataForSpawnVisual);
+				else	
+					VisualisationManager->CreateAndAddToMapP(Handle, CurrentSpawner->GetOwner(), Context.GetWorld(), NiagaraFragment.GetSystem().Get(), Location);
 
-				VisualisationManager->CreateAndAddToMapP(Context.GetEntity(Index), CurrentSpawner->GetOwner(), Context.GetWorld(), NiagaraFragment.GetSystem(), Location);
-
-				Context.Defer().RemoveTag<FAmalgamInitializeTag>(Context.GetEntity(Index));
+				Context.Defer().RemoveTag<FAmalgamInitializeTag>(Handle);
 				
 				StateFragView[Index].SetStateAndNotify(EAmalgamState::FollowPath, Context, Index);
 			}
