@@ -1,6 +1,7 @@
 Pulled from my end of studies project.
 
 Files included this repo are the ones that are mainly mine and contain the core of my work on this project.
+As the project isn't complete, files may contain unclear elements used for debugging / unused elements that haven't been cleaned-up. For this, I apologize in advance and will update the repo again as the project reaches it's end.
 
 A quick overview of the project : 
 We're making an RTS game that gets rid of the micro-management aspect. The game also has the ambition of displaying large amounts of units on screen to give the sensation of leading hordes into battle.
